@@ -44,15 +44,19 @@ def tone(x):
 
 def grade(rgb):
     rgb = rgb.copy()
+    # protect skies: bluish pixels (even pale, hazy ones) skip the warming
+    h0 = rgb_to_hsv(rgb)
+    sky = (band(h0[..., 0], 210, 45) * np.clip(h0[..., 1] * 12, 0, 1))[..., None]
+    warm = 1 - sky
     # slight warm white balance
-    rgb[..., 0] *= 1.045; rgb[..., 1] *= 1.01; rgb[..., 2] *= 0.95
+    rgb = rgb * (1 + warm * np.array([0.045, 0.01, -0.05]))
     rgb = np.clip(rgb, 0, 1)
     rgb = tone(rgb)
 
     hsv = rgb_to_hsv(rgb)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
 
-    # greens -> olive/yellow-green, a touch darker and calmer
+    # greens -> slightly olive, a touch richer
     wg = band(h, 115, 50)
     h = h - 4 * wg
     s = s * (1 + 0.05 * wg)
@@ -65,30 +69,35 @@ def grade(rgb):
 
     # skin / oranges -> warm and healthy
     wo = band(h, 28, 22)
-    s = s * (1 + 0.08 * wo)
+    s = s * (1 + 0.05 * wo)
 
-    # vibrance: boost muted colours more than already-saturated ones
-    s = s + 0.45 * s * (1 - s)
+    # vibrance: boost muted colours more than already-saturated ones,
+    # but hold back yellows/oranges so clothing and skin don't go neon
+    wy = band(h, 45, 30)
+    s = s + 0.45 * (1 - 0.7 * wy) * s * (1 - s)
     s = np.clip(s, 0, 1)
 
     rgb = hsv_to_rgb(np.stack([h, s, np.clip(v, 0, 1)], -1))
 
-    # subtle split tone: neutral-warm shadows, golden highlights
+    # subtle split tone: neutral-warm shadows, golden highlights (not on sky)
     lum = (0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2])[..., None]
-    sh = np.clip(1 - lum * 2.2, 0, 1); hi = np.clip(lum * 2 - 1, 0, 1)
+    sh = np.clip(1 - lum * 2.2, 0, 1); hi = np.clip(lum * 2 - 1, 0, 1) * warm
     rgb = rgb + sh * np.array([0.004, 0.002, -0.002]) + hi * np.array([0.015, 0.006, -0.012])
     return np.clip(rgb, 0, 1)
 
 if __name__ == "__main__":
     import sys
     out = sys.argv[1] if len(sys.argv) > 1 else "adventure_pop.cube"
+    # strength 0..1 blends the look with the untouched image
+    strength = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
     g = np.linspace(0, 1, N)
     # .cube order: red varies fastest
     b, gg, r = np.meshgrid(g, g, g, indexing="ij")
     grid = np.stack([r, gg, b], -1).reshape(-1, 3)
-    res = grade(grid)
+    res = np.clip(grid + strength * (grade(grid) - grid), 0, 1)
     with open(out, "w") as f:
-        f.write('TITLE "Adventure Pop"\nLUT_3D_SIZE %d\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n' % N)
+        f.write('TITLE "Adventure Pop %d"\n' % round(strength * 100))
+        f.write('LUT_3D_SIZE %d\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n' % N)
         for p in res:
             f.write("%.6f %.6f %.6f\n" % tuple(p))
     print("wrote", out)
